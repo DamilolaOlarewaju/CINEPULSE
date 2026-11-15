@@ -817,17 +817,17 @@
         const timer=setTimeout(function(){end(new Error('timeout'));},12000);
         window[cb]=function(data){end(null,data);};
         sc.onerror=function(){end(new Error('network error'));};
-        sc.src='https://itunes.apple.com/search?term=action&country=us&media=movie&entity=movie&limit=40&explicit=No&callback='+cb;
+        sc.src='https://itunes.apple.com/search?term=star%20wars&country=us&media=movie&entity=movie&limit=50&callback='+cb;
         document.head.appendChild(sc);
       });
       const movies=(response.results||[]).filter(function(x){
-        return x.trackId&&x.trackName&&x.artworkUrl100&&x.kind==='feature-movie';
+        return x.trackId && x.trackName && x.artworkUrl100 && (!x.kind || x.kind === 'feature-movie');
       }).slice(0,12);
-      if(movies.length<8)throw new Error('Not enough catalogue movies');
+      if(!movies.length)throw new Error('No usable movie records from Apple');
       MOVIES=movies.map(function(x,i){
         return {id:'itunes-'+x.trackId,title:x.trackName,
           year:x.releaseDate?new Date(x.releaseDate).getUTCFullYear():'—',
-          score:Math.max(7.6,9.6-i*0.16),
+          score:Math.max(7.6,9.6-i*0.16), /* demo display index, not an audience score */
           runtime:Math.round((x.trackTimeMillis||0)/60000),
           genres:[x.primaryGenreName||'Movie'],
           c1:'#7c5cff',c2:'#22d3ee',
@@ -836,7 +836,7 @@
           artwork:x.artworkUrl100.replace('100x100bb','600x900bb'),
           storeUrl:x.trackViewUrl||''};
       });
-      state.heroIndexes=[0,1,2,3];
+      state.heroIndexes=[0,1,2,3].filter(function(i){return i<MOVIES.length;});
       state.trending=MOVIES.slice(0,8);
       els.grid.innerHTML=MOVIES.map(cardHTML).join('');
       applyLayout(false);renderHero(0,false);buildTicker();updateChart();
