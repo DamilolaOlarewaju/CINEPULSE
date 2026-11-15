@@ -523,6 +523,7 @@
   @media (prefers-reduced-motion:reduce){
     *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
   }
+.movie-cover{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:0}
 </style>
 </head>
 <body>
@@ -538,7 +539,7 @@
       </a>
       <nav class="nav">
         <a href="#trending">Trending</a>
-        <a href="#feed">Live signal</a>
+        <a href="#feed">Catalogue activity</a>
         <a href="#soon">Coming soon</a>
       </nav>
       <div class="header-actions">
@@ -562,7 +563,7 @@
   <div class="status-line">
     <div class="wrap status-inner">
       <span class="dot"></span>
-      <span>Auto-sync engine</span>
+      <span>Movie catalogue</span>
       <span class="status-sync">Data refreshed <span id="ago">0</span>s ago · next in <span id="nextIn">15</span>s</span>
     </div>
     <div class="sync-track"><div class="sync-fill" id="syncProgress"></div></div>
@@ -574,7 +575,7 @@
   <section class="hero">
     <div class="wrap hero-grid">
       <div class="hero-content" id="heroContent">
-        <span class="eyebrow"><span class="dot"></span> Featured · Updated live</span>
+        <span class="eyebrow"><span class="dot"></span> Featured · Demo catalogue</span>
         <h1 id="heroTitle">Neon <em>Requiem</em></h1>
         <div class="hero-meta" id="heroMeta"></div>
         <p class="lede" id="heroSynopsis"></p>
@@ -593,7 +594,7 @@
           <div class="art-glyph" id="artGlyph">N</div>
           <div class="art-scan"></div>
           <div class="art-shine"></div>
-          <div class="art-badge"><span class="dot"></span> Live ranking</div>
+          <div class="art-badge"><span class="dot"></span> Featured selection</div>
           <div class="art-foot">
             <h3 id="artTitle">Neon Requiem</h3>
             <span id="artMeta">2025 · Sci-Fi</span>
@@ -611,8 +612,8 @@
     <div class="wrap">
       <div class="sec-head">
         <div>
-          <h2>Trending right now</h2>
-          <p>Rankings recalculate every 15&nbsp;seconds from watchlist velocity, trailer engagement and audience scores.</p>
+          <h2>Movie catalogue picks</h2>
+          <p>Movie titles and posters are refreshed from Apple when available. Display indexes are illustrative, not audience ratings.</p>
         </div>
         <div class="right">
           <span class="chip" id="liveChip"><span class="dot" style="display:inline-block;vertical-align:middle;margin-right:7px"></span>Live</span>
@@ -634,8 +635,8 @@
         <ul class="feed-list" id="feedList"></ul>
         <div class="stat-row">
           <div class="stat"><b id="statTitles">12</b><span>Titles tracked</span></div>
-          <div class="stat"><b id="statUpdates">0</b><span>Updates today</span></div>
-          <div class="stat"><b id="statLatency">1.2s</b><span>Feed latency</span></div>
+          <div class="stat"><b id="statUpdates">0</b><span>Updates / source</span></div>
+          <div class="stat"><b id="statLatency">1.2s</b><span>Data source</span></div>
         </div>
       </div>
       <div class="panel">
@@ -694,7 +695,7 @@
   "use strict";
 
   /* ---------------- data ---------------- */
-  const MOVIES = [
+  let MOVIES = [
     {id:'neon-requiem', title:'Neon Requiem', year:2025, score:9.1, runtime:128, genres:['Sci-Fi','Thriller'], c1:'#7c5cff', c2:'#22d3ee',
       director:'Aoife Marchetti', cast:'Lena Voss, Idris Kane, Soo-ah Park',
       synopsis:'A memory courier smuggles the last analog dream through a megacity that has outlawed sleep. What she carries could reboot an entire generation.'},
@@ -798,11 +799,63 @@
     heroIndexes: [0,4,8,11]
   };
 
+  
+  /* Public movie catalogue; falls back to the original demo when offline. */
+  function moviePoster(m){
+    return m.artwork ? '<img class="movie-cover" src="'+esc(m.artwork)+'" alt="" loading="lazy">' : '';
+  }
+  async function loadCatalogue(){
+    try {
+      const response=await new Promise(function(resolve,reject){
+        const cb='__cinepulseMovieData',sc=document.createElement('script');
+        let finished=false;
+        function end(err,result){
+          if(finished)return;
+          finished=true;clearTimeout(timer);sc.remove();delete window[cb];
+          if(err)reject(err);else resolve(result);
+        }
+        const timer=setTimeout(function(){end(new Error('timeout'));},12000);
+        window[cb]=function(data){end(null,data);};
+        sc.onerror=function(){end(new Error('network error'));};
+        sc.src='https://itunes.apple.com/search?term=action&country=us&media=movie&entity=movie&limit=40&explicit=No&callback='+cb;
+        document.head.appendChild(sc);
+      });
+      const movies=(response.results||[]).filter(function(x){
+        return x.trackId&&x.trackName&&x.artworkUrl100&&x.kind==='feature-movie';
+      }).slice(0,12);
+      if(movies.length<8)throw new Error('Not enough catalogue movies');
+      MOVIES=movies.map(function(x,i){
+        return {id:'itunes-'+x.trackId,title:x.trackName,
+          year:x.releaseDate?new Date(x.releaseDate).getUTCFullYear():'—',
+          score:Math.max(7.6,9.6-i*0.16),
+          runtime:Math.round((x.trackTimeMillis||0)/60000),
+          genres:[x.primaryGenreName||'Movie'],
+          c1:'#7c5cff',c2:'#22d3ee',
+          director:x.artistName||'Not listed',cast:'Not listed',
+          synopsis:x.longDescription||x.shortDescription||'See movie listing for details.',
+          artwork:x.artworkUrl100.replace('100x100bb','600x900bb'),
+          storeUrl:x.trackViewUrl||''};
+      });
+      state.heroIndexes=[0,1,2,3];
+      state.trending=MOVIES.slice(0,8);
+      els.grid.innerHTML=MOVIES.map(cardHTML).join('');
+      applyLayout(false);renderHero(0,false);buildTicker();updateChart();
+      els.statTitles.textContent=MOVIES.length;
+      els.feed.innerHTML=MOVIES.slice(0,5).map(function(m){
+        return '<li class="feed-item"><span class="feed-icon">✦</span><div class="feed-body"><p class="feed-text">'+esc(m.title)+' — in the Apple movie catalogue</p></div></li>';
+      }).join('');
+      els.statUpdates.textContent='Apple';
+      els.statLatency.textContent='Catalogue';
+      const label=document.querySelector('.hero .eyebrow');
+      if(label)label.textContent='Featured · Apple catalogue';
+      return true;
+    }catch(e){console.warn('Using offline demo movie list:',e.message);return false;}
+  }
   /* ---------------- poster / card templates ---------------- */
   function cardHTML(m){
     return '<article class="card" data-id="'+m.id+'" data-genres="'+m.genres.join(',')+'">' +
       '<div class="poster" style="--c1:'+m.c1+';--c2:'+m.c2+'">' +
-        '<span class="poster-glyph">'+esc(m.title.charAt(0))+'</span>' +
+        moviePoster(m) + '<span class="poster-glyph">'+esc(m.title.charAt(0))+'</span>' +
         '<span class="poster-scrim"></span>' +
         '<span class="rank-badge"></span>' +
         '<span class="new-badge">NEW</span>' +
@@ -977,7 +1030,9 @@
 
       els.artSurface.style.setProperty('--c1', m.c1);
       els.artSurface.style.setProperty('--c2', m.c2);
-      els.artGlyph.textContent = m.title.charAt(0);
+      els.artGlyph.textContent = m.artwork ? '' : m.title.charAt(0);
+       els.artSurface.style.backgroundImage = m.artwork ? 'linear-gradient(0deg,rgba(7,7,11,.65),rgba(7,7,11,.2)),url("'+m.artwork+'")' : '';
+       els.artSurface.style.backgroundSize='cover';
       els.artTitle.textContent = m.title;
       els.artMeta.textContent = m.year + ' · ' + m.genres.join(' / ');
     };
@@ -1151,7 +1206,7 @@
 
     els.modalBody.innerHTML =
       '<div class="modal-hero">' +
-        '<div class="modal-poster" style="--c1:'+m.c1+';--c2:'+m.c2+'">' +
+        '<div class="modal-poster" style="--c1:'+m.c1+';--c2:'+m.c2+'">' + moviePoster(m) +
           '<span class="poster-glyph">'+esc(m.title.charAt(0))+'</span>' +
           '<span class="poster-scrim"></span>' +
         '</div>' +
@@ -1163,14 +1218,14 @@
             '<span class="chip">'+m.runtime+' min</span>' +
             m.genres.map(function(g){ return '<span class="chip">'+esc(g)+'</span>'; }).join('') +
           '</div>' +
-          '<p class="syn" style="margin-bottom:0">'+esc(m.synopsis)+'</p>' +
+          '<p class="syn" style="margin-bottom:0">'+esc(m.synopsis)+'</p>' + (m.storeUrl ? '<p><a href="'+esc(m.storeUrl)+'" target="_blank" rel="noopener noreferrer">View on Apple TV ↗</a></p>' : '') +
         '</div>' +
       '</div>' +
       '<div class="modal-body">' +
         '<div class="kv">' +
           '<div><span>Director</span><b>'+esc(m.director)+'</b></div>' +
           '<div><span>Cast</span><b>'+esc(m.cast)+'</b></div>' +
-          '<div><span>Live rank</span><b>#'+(state.trending.findIndex(function(x){return x.id===m.id;})+1 || '—')+'</b></div>' +
+          '<div><span>Display rank</span><b>#'+(state.trending.findIndex(function(x){return x.id===m.id;})+1 || '—')+'</b></div>' +
         '</div>' +
         '<div class="btn-row">' +
           '<button class="btn btn-primary" id="modalTrailer">▶ Play trailer</button>' +
@@ -1278,14 +1333,13 @@
 
     setInterval(tickClock, 1000);
     setInterval(updateSoon, 1000);
-    setInterval(pushFeed, 3400);
-    setInterval(syncNow, state.syncMs);
-    setInterval(function(){
-      els.statLatency.textContent = (0.7 + Math.random() * 1.1).toFixed(1) + 's';
-    }, 5000);
+    /* Do not publish fabricated live news. */
+    setInterval(loadCatalogue, 600000);
+    /* No simulated network latency reports. */
 
     updateSoon();
     tickClock();
+    loadCatalogue();
   }
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
