@@ -613,14 +613,14 @@
       <div class="sec-head">
         <div>
           <h2>Movie catalogue picks</h2>
-          <p>Movie posters, titles, and ratings are retrieved from TMDB when available. Offline demo data is fictional.</p>
+          <p>Search thousands of movies, browse by genre, and get recommendations with TMDB-powered information.</p>
         </div>
         <div class="right">
           <span class="chip" id="liveChip"><span class="dot" style="display:inline-block;vertical-align:middle;margin-right:7px"></span>Live</span>
         </div>
       </div>
       <div class="chips" id="genreChips"></div>
-      <div class="grid" id="trendGrid"></div>
+      <div id="catalogStatus" role="status" aria-live="polite" style="color:#a4a4b6;margin:12px 0">Loading movies…</div><div class="btn-row" style="margin-bottom:18px"><button class="btn btn-ghost" id="surpriseMe" type="button">✦ Pick a movie for me</button></div><div class="grid" id="trendGrid"></div><div style="text-align:center;margin:26px 0"><button class="btn btn-ghost" id="loadMore" type="button" hidden>Load more movies</button></div>
     </div>
   </section>
 
@@ -805,47 +805,113 @@
   function moviePoster(m){
     return m.artwork ? '<img class="movie-cover" src="'+esc(m.artwork)+'" alt="" loading="lazy">' : '';
   }
-  async function loadCatalogue(){
-    try {
-      const response=await fetch('/api/movies',{headers:{Accept:'application/json'}});
+  let requestSequence=0;
+  let nextPage=1;
+  let totalPages=1;
+  let browsing=false;
+  let searchDebounce;
+  const storedWatch = new Map();
+  function movieFromAPI(x){
+    return {id:'tmdb-'+x.trackId,title:x.trackName,
+      year:x.releaseDate?new Date(x.releaseDate).getUTCFullYear():'—',
+      score:Number(x.voteAverage)||0,
+      runtime:x.trackTimeMillis?Math.round(x.trackTimeMillis/60000):null,
+      genres:x.genres&&x.genres.length?x.genres:[x.primaryGenreName||'Movie'],
+      c1:'#7c5cff',c2:'#22d3ee',director:x.artistName||'Not listed',
+      cast:'Not listed',synopsis:x.longDescription||'See the TMDB listing for details.',
+      artwork:x.artworkUrl100||'',storeUrl:x.trackViewUrl||''};
+  }
+  function saveWatchlist(){
+    try{localStorage.setItem('cinepulse-watchlist-v1',JSON.stringify(Array.from(storedWatch.values())));}catch(e){}
+  }
+  function restoreWatchlist(){
+    try{
+      const items=JSON.parse(localStorage.getItem('cinepulse-watchlist-v1')||'[]');
+      if(Array.isArray(items))items.slice(0,100).forEach(function(m){
+        if(m&&typeof m.id==='string'&&m.id.startsWith('tmdb-')) {
+          storedWatch.set(m.id,m);state.watch.add(m.id);
+        }
+      });
+    }catch(e){}
+  }
+  function toggleWatch(m){
+    if(state.watch.has(m.id)){state.watch.delete(m.id);storedWatch.delete(m.id);}
+    else{state.watch.add(m.id);storedWatch.set(m.id,m);}
+    saveWatchlist();updateWatchCount();
+  }
+  function setCatalogStatus(message){
+    const el=document.getElementById('catalogStatus');
+    if(el)el.textContent=message;
+  }
+  async function loadCatalogue(append){
+    const sequence=++requestSequence;
+    if(browsing && append)return;
+    browsing=true;
+    const button=document.getElementById('loadMore');
+    if(button)button.disabled=true;
+    const q=state.query.trim(),genre=state.genre;
+    const page=append?nextPage:1;
+    setCatalogStatus(append?'Loading more movies…':q?'Searching all movies…':'Loading movies…');
+    try{
+      const url='/api/movies?'+new URLSearchParams({q:q,genre:genre,page:String(page)}).toString();
+      const response=await fetch(url,{headers:{Accept:'application/json'}});
       const data=await response.json();
       if(!response.ok)throw new Error(data.error||'Movie service error '+response.status);
-      const movies=(data.results||[]).filter(function(x){
-        return x.trackId&&x.trackName&&x.artworkUrl100;
-      }).slice(0,12);
-      if(!movies.length)throw new Error('TMDB returned no movies');
-      MOVIES=movies.map(function(x){
-        return {id:'tmdb-'+x.trackId,title:x.trackName,
-          year:x.releaseDate?new Date(x.releaseDate).getUTCFullYear():'—',
-          score:Number(x.voteAverage)||0,
-          runtime:x.trackTimeMillis?Math.round(x.trackTimeMillis/60000):null,
-          genres:[x.primaryGenreName||'Movie'],
-          c1:'#7c5cff',c2:'#22d3ee',
-          director:x.artistName||'Not listed',cast:'Not listed',
-          synopsis:x.longDescription||'See movie listing for details.',
-          artwork:x.artworkUrl100,
-          storeUrl:x.trackViewUrl||''};
-      });
+      if(sequence!==requestSequence)return false;
+      const fetched=(data.results||[]).filter(function(x){return x.trackId&&x.trackName;}).map(movieFromAPI);
+      if(append){
+        const seen=new Set(MOVIES.map(function(m){return m.id;}));
+        fetched.forEach(function(m){if(!seen.has(m.id)){MOVIES.push(m);seen.add(m.id);}});
+      }else{
+        MOVIES=fetched;
+      }
+      nextPage=page+1;totalPages=Number(data.totalPages)||1;
+      state.trending=MOVIES.slice();
       state.heroIndexes=[0,1,2,3].filter(function(i){return i<MOVIES.length;});
-      state.trending=MOVIES.slice().sort(function(a,b){return b.score-a.score;}).slice(0,8);
       els.grid.innerHTML=MOVIES.map(cardHTML).join('');
       els.heroDots.innerHTML=state.heroIndexes.map(function(_,i){
         return '<button class="hero-dot'+(i===0?' on':'')+'" data-i="'+i+'" aria-label="Featured '+(i+1)+'"></button>';
       }).join('');
-      applyLayout(false);renderHero(0,false);buildTicker();updateChart();
+      applyLayout(false);
+      if(MOVIES.length){renderHero(0,false);}
+      buildTicker();updateChart();
       els.statTitles.textContent=MOVIES.length;
       els.feed.innerHTML=MOVIES.slice(0,5).map(function(m){
-        return '<li class="feed-item"><span class="feed-icon">✦</span><div class="feed-body"><p class="feed-text">'+esc(m.title)+' — trending on TMDB this week</p></div></li>';
+        return '<li class="feed-item"><span class="feed-icon">✦</span><div class="feed-body"><p class="feed-text">'+esc(m.title)+' — found on TMDB</p></div></li>';
       }).join('');
-      els.statUpdates.textContent='TMDB';
-      els.statLatency.textContent='Weekly';
+      els.statUpdates.textContent='TMDB';els.statLatency.textContent='Catalogue';
+      setCatalogStatus(MOVIES.length+' movies loaded'+(q?' for "'+q+'"':'')+(page<totalPages?' · More available':''));
+      if(button)button.hidden=nextPage>totalPages||!fetched.length;
       const label=document.querySelector('.hero .eyebrow');
-      if(label)label.textContent='Featured · TMDB trending movies';
+      if(label)label.textContent='Featured · TMDB movie catalogue';
       return true;
     }catch(e){
-      console.warn('Using offline demo movie list:',e.message);
+      if(sequence===requestSequence){
+        console.warn('Movie catalogue request failed:',e.message);
+        setCatalogStatus('Unable to load movies. Check your connection and retry.');
+      }
       return false;
+    }finally{
+      if(sequence===requestSequence){browsing=false;if(button)button.disabled=false;}
     }
+  }
+  async function surpriseMe(){
+    const button=document.getElementById('surpriseMe');
+    if(button)button.disabled=true;
+    setCatalogStatus('Finding a highly rated movie…');
+    try{
+      const page=1+Math.floor(Math.random()*5);
+      const response=await fetch('/api/movies?'+new URLSearchParams({genre:state.genre,mode:'recommend',page:String(page)}));
+      const data=await response.json();
+      if(!response.ok)throw Error(data.error||'Recommendation unavailable');
+      const picks=(data.results||[]).filter(function(x){return x.trackId&&x.trackName;});
+      if(!picks.length)throw Error('No recommendations found');
+      const movie=movieFromAPI(picks[Math.floor(Math.random()*picks.length)]);
+      if(!MOVIES.some(function(m){return m.id===movie.id;})){MOVIES.push(movie);}
+      setCatalogStatus('Recommended: '+movie.title);
+      openModal(movie.id);
+    }catch(e){setCatalogStatus('Recommendation unavailable. Please try again.');}
+    finally{if(button)button.disabled=false;}
   }
   /* ---------------- poster / card templates ---------------- */
   function cardHTML(m){
@@ -882,8 +948,8 @@
       const b = e.target.closest('.chip-btn');
       if(!b) return;
       state.genre = b.dataset.genre;
-      $$('.chip-btn', els.chips).forEach(function(x){ x.classList.toggle('on', x===b); });
-      applyLayout(true);
+      $('.chip-btn', els.chips).forEach(function(x){ x.classList.toggle('on', x===b); });
+      loadCatalogue(false);
     });
   }
 
@@ -894,20 +960,23 @@
     prevVisible.forEach(function(c){ first.set(c.dataset.id, c.getBoundingClientRect()); });
 
     let source = state.watchOnly
-      ? MOVIES.slice().sort(function(a,b){ return b.score - a.score; })
-      : state.trending.slice();
+      ? Array.from(storedWatch.values()).sort(function(a,b){return b.score-a.score;})
+      : MOVIES.slice();
 
     const q = state.query.trim().toLowerCase();
     let list = source.filter(function(m){
       if(state.watchOnly && !state.watch.has(m.id)) return false;
-      if(state.genre !== 'All' && m.genres.indexOf(state.genre) === -1) return false;
-      if(q){
-        const blob = (m.title + ' ' + m.genres.join(' ') + ' ' + m.director).toLowerCase();
-        if(blob.indexOf(q) === -1) return false;
+      if(state.watchOnly && state.genre !== 'All' && m.genres.indexOf(state.genre) === -1) return false;
+      if(q && state.watchOnly){
+        const blob=(m.title+' '+m.genres.join(' ')).toLowerCase();
+        if(blob.indexOf(q)===-1)return false;
       }
       return true;
     });
 
+    if(state.watchOnly){
+      els.grid.innerHTML=list.map(cardHTML).join('');
+    }
     const ids = list.map(function(m){ return m.id; });
 
     $$('.card', els.grid).forEach(function(c){
@@ -947,7 +1016,7 @@
     $$('.card', els.grid).forEach(function(c){
       if(c.style.display === 'none') return;
       const idx = ids.indexOf(c.dataset.id);
-      const m = MOVIES.find(function(x){ return x.id === c.dataset.id; });
+      const m = MOVIES.find(function(x){ return x.id === c.dataset.id; }) || storedWatch.get(c.dataset.id);
       if(!m) return;
       const rankEl = $('.rank-badge', c);
       if(rankEl) rankEl.textContent = (idx + 1);
@@ -1193,7 +1262,7 @@
   let lastFocused = null;
 
   function openModal(id){
-    const m = MOVIES.find(function(x){ return x.id === id; });
+    const m = MOVIES.find(function(x){ return x.id === id; }) || storedWatch.get(id);
     if(!m) return;
     const watched = state.watch.has(m.id);
 
@@ -1232,13 +1301,12 @@
 
     const watchBtn = document.getElementById('modalWatch');
     watchBtn.addEventListener('click', function(){
-      if(state.watch.has(m.id)) state.watch.delete(m.id);
-      else state.watch.add(m.id);
+      toggleWatch(m);
       const on = state.watch.has(m.id);
       watchBtn.textContent = on ? '✓ In watchlist' : '+ Add to watchlist';
       updateWatchCount();
       applyLayout(false);
-      if(MOVIES[state.heroIndexes[state.heroIdx]].id === m.id){
+      if(MOVIES[state.heroIndexes[state.heroIdx]] && MOVIES[state.heroIndexes[state.heroIdx]].id === m.id){
         els.heroWatch.textContent = on ? '✓ In watchlist' : '+ Watchlist';
       }
     });
@@ -1269,13 +1337,16 @@
   });
 
   els.search.addEventListener('input', function(){
-    state.query = this.value;
-    applyLayout(false);
+    state.query=this.value;
+    clearTimeout(searchDebounce);
+    if(state.watchOnly)applyLayout(false);
+    else searchDebounce=setTimeout(function(){loadCatalogue(false);},350);
   });
 
   els.watchToggle.addEventListener('click', function(){
     state.watchOnly = !state.watchOnly;
     this.classList.toggle('active', state.watchOnly);
+    if(!state.watchOnly)els.grid.innerHTML=MOVIES.map(cardHTML).join('');
     applyLayout(true);
   });
 
@@ -1292,8 +1363,7 @@
 
   els.heroWatch.addEventListener('click', function(){
     const m = MOVIES[state.heroIndexes[state.heroIdx]];
-    if(state.watch.has(m.id)) state.watch.delete(m.id);
-    else state.watch.add(m.id);
+    toggleWatch(m);
     this.textContent = state.watch.has(m.id) ? '✓ In watchlist' : '+ Watchlist';
     updateWatchCount();
     applyLayout(false);
@@ -1309,6 +1379,7 @@
   /* ---------------- boot ---------------- */
   function boot(){
     buildGrid();
+    restoreWatchlist();
     buildChips();
     buildHeroDots();
     buildSoon();
@@ -1327,12 +1398,14 @@
     setInterval(tickClock, 1000);
     setInterval(updateSoon, 1000);
     /* Do not publish fabricated live news. */
-    setInterval(loadCatalogue, 600000);
+    setInterval(function(){if(!state.query.trim()&&!state.watchOnly)loadCatalogue(false);},600000);
     /* No simulated network latency reports. */
 
     updateSoon();
     tickClock();
-    loadCatalogue();
+    document.getElementById('loadMore').addEventListener('click',function(){loadCatalogue(true);});
+    document.getElementById('surpriseMe').addEventListener('click',surpriseMe);
+    loadCatalogue(false);
   }
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
